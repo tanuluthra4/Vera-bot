@@ -114,6 +114,23 @@ Respond ONLY with valid JSON (no markdown fences):
   "rationale": "1 sentence"
 }"""
 
+def safe_parse_json(text: str):
+    # remove markdown
+    text = re.sub(r'^```(?:json)?\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+
+    # extract JSON block
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if not match:
+        raise ValueError("No JSON found")
+
+    json_str = match.group(0)
+
+    # remove trailing commas (common LLM mistake)
+    json_str = re.sub(r',\s*}', '}', json_str)
+    json_str = re.sub(r',\s*]', ']', json_str)
+
+    return json.loads(json_str)
 
 import google.generativeai as genai
 
@@ -135,10 +152,12 @@ def _call_gemini(system, user_content, max_tokens=800):
         )
 
         text = response.text.strip()
+        print("RAW LLM OUTPUT:\n", text)
+        
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
-        return json.loads(text)
+        return safe_parse_json(text)
 
     except Exception as e:
         print("GEMINI ERROR:", str(e))
