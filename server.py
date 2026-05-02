@@ -115,39 +115,42 @@ Respond ONLY with valid JSON (no markdown fences):
 }"""
 
 
-def _call_gemini(system: str, user_content: str, max_tokens: int = 800) -> dict:
-    """Call Gemini API. Returns parsed JSON dict from model output."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set")
+import google.generativeai as genai
 
-    payload = {
-        "model": MODEL,
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "system": system,
-        "messages": [{"role": "user", "content": user_content}]
-    }
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-    import google.generativeai as genai
-    
-    req = urllib.request.Request(
-        
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": GEMINI_API_KEY,
-            "gemini-version": "2023-06-01",
-        },
-        method="POST"
+def _call_gemini(system, user_content, max_tokens=800):
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=system
     )
 
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    response = model.generate_content(
+        user_content,
+        generation_config={
+            "temperature": 0,
+            "max_output_tokens": max_tokens,
+        }
+    )
 
-    text = data["content"][0]["text"].strip()
+    text = response.text.strip()
+
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
-    return json.loads(text)
+
+    try:
+        text = response.text.strip()
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+        return json.loads(text)
+    except Exception as e:
+        return {
+            "body": "Hi, checking in — anything I can help with today?",
+            "cta": "none",
+            "send_as": "vera",
+            "suppression_key": "fallback",
+            "rationale": f"Fallback due to parsing error: {e}"
+        }
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
