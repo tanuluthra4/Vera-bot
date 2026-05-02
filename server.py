@@ -399,7 +399,22 @@ async def tick(body: TickBody):
         try:
             result = compose_message(category, merchant, trg, customer)
         except Exception as e:
-            # Don't crash the tick — skip this trigger
+            print("ERROR:", str(e))
+
+            actions.append({
+                "conversation_id": f"error_{uuid.uuid4().hex[:6]}",
+                "merchant_id": merchant.get("merchant_id", ""),
+                "customer_id": None,
+                "send_as": "vera",
+                "trigger_id": trg_id,
+                "template_name": "vera_fallback_v1",
+                "template_params": [],
+                "body": "Quick check — want me to help set up something for this?",
+                "cta": "open_ended",
+                "suppression_key": f"error:{trg_id}",
+                "rationale": f"Fallback due to error: {str(e)}"
+            })
+
             continue
 
         merchant_id = merchant.get("merchant_id", "")
