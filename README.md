@@ -1,63 +1,142 @@
 # Vera Bot — magicpin AI Challenge Submission
 
 **Submitted by**: Tanu Luthra  
-**Model**: `claude-sonnet-4-20250514`  
-**Approach**: Trigger-routed LLM composer with post-LLM validation
+**Model**: gemini-2.5-flash  
+**Architecture**: FastAPI-based trigger-routed LLM system with post-generation validation
 
 ---
 
-## Approach
+## Overview
 
-### Core Architecture
+Vera Bot is a production-style HTTP service that generates high-quality WhatsApp messages for merchants based on structured context inputs.
 
-`bot.py` implements a single `compose()` function that:
-
-1. **Builds a rich, structured prompt** from all four contexts (category, merchant, trigger, customer), extracting only the fields that matter for message composition — no context stuffing.
-2. **Routes trigger types** via the system prompt's trigger-type guidance rather than hard-coded branches. This keeps the routing generalizable to trigger types the judge introduces post-submission.
-3. **Calls Claude Sonnet** at `temperature=0` for determinism.
-4. **Post-validates** the output: ensures all five required fields are present, enforces `send_as` based on customer presence, falls back to sensible defaults.
-
-### What the system prompt enforces
-
-- **Anti-patterns are explicitly listed** (generic discounts, buried CTAs, preambles, re-introduction) — the LLM treats this as a checklist.
-- **Compulsion levers are enumerated** with examples — specificity, loss aversion, social proof, effort externalization, curiosity, asking the merchant, single binary commitment.
-- **Trigger-type guidance** maps each trigger kind to the appropriate tone, CTA type, and what to anchor the message on.
-- **No hallucination** is a hard rule: the model is told to only use facts present in the provided contexts.
-
-### Prompt design choices
-
-- Category context is trimmed to the top 3 digest items (most relevant to current trigger) rather than the full list.
-- Merchant conversation history is limited to last 3 turns (prevents re-sending variations of what was already said).
-- Customer context includes a directive to set `send_as = "merchant_on_behalf"` — this has never failed in testing.
-- Language matching is included as an explicit instruction, with the merchant's `languages` array and customer's `language_pref` both passed in.
+The system exposes all required endpoints:
+- `/v1/context` → ingest category, merchant, customer, trigger data
+- `/v1/tick` → evaluate triggers and generate outbound messages
+- `/v1/reply` → handle multi-turn conversations
+- `/v1/healthz`, `/v1/metadata`, `/v1/teardown`
 
 ---
 
-## Multi-turn (conversation_handlers.py)
+## Core Approach
 
-The optional `conversation_handlers.py` implements:
+### 1. Trigger → Context Resolution
+Each trigger is resolved into:
+- Category context (voice, peer stats, trends)
+- Merchant context (performance, offers, signals)
+- Optional customer context
 
-- **Auto-reply detection** via regex patterns for common WhatsApp Business canned responses (English and Hindi). After 2 consecutive auto-replies, Vera exits gracefully.
-- **Intent detection** for action-confirming ("yes", "go ahead", "haan", "ok") and stop-signaling ("nahi", "not interested", "band karo") messages — routes to immediate action or graceful exit respectively.
-- **LLM-powered reply generation** for ambiguous turns, with conversation history passed as context.
-- **Graceful exit handling**: the `end` action type is returned when the merchant is clearly not interested, avoiding turn-burning.
+Only relevant fields are included → avoids prompt bloat.
+
+---
+
+### 2. Structured Prompt Composition
+A single prompt is constructed containing:
+- Category intelligence (digest, peer stats, trends)
+- Merchant performance and offers
+- Trigger payload (urgency, type)
+- Language + tone instructions
+
+Strict constraints enforced:
+- No hallucination (only provided facts)
+- Hinglish allowed
+- One clear CTA
+- No preambles or fluff
+
+---
+
+### 3. LLM Generation (Gemini 2.5 Flash)
+- Temperature = 0 → deterministic outputs
+- Single-call generation → low latency
+- JSON-only output enforced
+
+---
+
+### 4. Post-LLM Validation (Critical Layer)
+
+System does NOT trust LLM blindly.
+
+Enforces:
+- Valid `cta` (`yes_stop`, `open_ended`, `none`)
+- Correct `send_as` (based on customer presence)
+- Non-empty body fallback
+- Deterministic `suppression_key`
+- CTA enforcement (ensures "Reply YES" exists when required)
+
+---
+
+### 5. Suppression & State Management
+
+- Prevents duplicate messages using `suppression_key`
+- Maintains in-memory:
+  - contexts
+  - conversations
+  - conversation metadata
+- Ensures one trigger → one action
+
+---
+
+### 6. Multi-turn Handling (/v1/reply)
+
+Supports:
+- YES → immediate value delivery
+- NO → graceful exit
+- Auto-reply detection → retry once, then stop
+- Question handling → grounded responses only
+
+Conversation history is passed to maintain continuity.
+
+---
+
+## Design Decisions
+
+| Decision | Reason |
+|--------|--------|
+| Single prompt | Faster, avoids multi-step errors |
+| Gemini Flash | Low latency + strong instruction following |
+| Post-validation | More reliable than re-prompting |
+| No retrieval system | Dataset fits in prompt |
+| In-memory state | Simpler, fast for evaluation |
 
 ---
 
 ## Tradeoffs
 
-| Choice | Rationale |
-|---|---|
-| Single-prompt vs. multi-step | Single prompt keeps latency well under 30s; avoids error compounding across steps |
-| Claude Sonnet over Haiku | Sonnet's instruction-following is meaningfully better for complex multi-constraint prompts; cost is acceptable at 30 submissions |
-| Post-LLM validation over re-prompting | Simpler failure path; the primary failure mode is wrong `cta` type, which is easy to repair deterministically |
-| No retrieval/embedding | Dataset fits in a single prompt; retrieval overhead would add latency for marginal gain at 30-message scale |
+- No retry mechanism for LLM failures (fallback used instead)
+- In-memory storage (not persistent)
+- CTA logic partially heuristic (not learned)
 
 ---
 
-## What additional context would have helped most
+## Testing
 
-1. **Auto-reply pattern corpus** — production Vera has seen millions of WhatsApp Business auto-replies; a 50-sample list of real patterns would make detection far more robust.
-2. **Merchant engagement history tags** — knowing whether past messages were opened, CTAs tapped, or ignored would let the bot avoid repeating styles that haven't worked for a specific merchant.
-3. **Language detection per-turn** — the dataset has `language_pref` at the identity level, but merchants frequently code-switch mid-conversation. A per-turn detected language would help.
-4. **Category-specific CTA conversion rates** — knowing that dentists respond better to `open_ended` vs `yes_stop` (or vice versa) would let the system pick CTAs based on evidence, not heuristics.
+The system was tested using Postman:
+
+- Context ingestion (`category`, `merchant`, `trigger`)
+- Trigger execution via `/v1/tick`
+- Multi-turn replies via `/v1/reply`
+
+A clean Postman collection is included in:
+```
+postman/vera-bot-collection.json
+```
+
+---
+
+## What could improve further
+
+1. Retry mechanism for LLM failures  
+2. Learned CTA optimization (based on past conversions)  
+3. Better auto-reply detection patterns  
+4. Persistent storage for production use  
+
+---
+
+## Summary
+
+The system prioritizes:
+- Deterministic outputs
+- Strong constraint enforcement
+- Real-world deployability
+
+It is designed to behave like a production-ready messaging system rather than a prompt experiment.
