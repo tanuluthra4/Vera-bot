@@ -13,11 +13,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Auto-reply detection
-# ---------------------------------------------------------------------------
-
 AUTO_REPLY_PATTERNS = [
     # Common WhatsApp Business auto-replies
     r"aapki jaankari ke liye bahut-bahut shukriya",
@@ -39,11 +34,6 @@ def is_auto_reply(message: str) -> bool:
         if re.search(pattern, msg_lower):
             return True
     return False
-
-
-# ---------------------------------------------------------------------------
-# Intent detection
-# ---------------------------------------------------------------------------
 
 ACTION_INTENTS = [
     r"\b(yes|yep|yeah|haan|ha|ok|okay|sure|bilkul|zaroor|go ahead|let'?s do it|please do|karo|kar do|theek hai)\b",
@@ -72,11 +62,6 @@ def detect_intent(message: str) -> str:
             return "stop"
     return "unknown"
 
-
-# ---------------------------------------------------------------------------
-# ConversationState
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ConversationState:
     conversation_id: str
@@ -90,11 +75,6 @@ class ConversationState:
     turn_number: int = 0
     auto_reply_count: int = 0
     resolved: bool = False
-
-
-# ---------------------------------------------------------------------------
-# LLM call (same API as bot.py)
-# ---------------------------------------------------------------------------
 
 RESPOND_SYSTEM = """You are Vera, magicpin's merchant AI assistant handling a live WhatsApp conversation.
 
@@ -119,27 +99,33 @@ Respond ONLY with valid JSON (no markdown fences):
 }"""
 
 
-def _call_claude_reply(prompt: str) -> dict:
-    payload = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 600,
-        "temperature": 0,
-        "system": RESPOND_SYSTEM,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"},
-        method="POST"
+import os
+import google.generativeai as genai
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+
+def _call_gemini_reply(prompt: str) -> dict:
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=RESPOND_SYSTEM
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode())
-    text = data["content"][0]["text"].strip()
+
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0,
+            "max_output_tokens": 600,
+        }
+    )
+
+    text = response.text.strip()
+
+    # Clean markdown if any
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
-    return json.loads(text)
 
+    return json.loads(text)
 
 def respond(state: ConversationState, merchant_message: str) -> dict:
     """
@@ -175,7 +161,7 @@ The merchant just sent an auto-reply. Try once more with a DIFFERENT, shorter an
 ask a direct closed question that a real person would have to consciously reply to.
 Keep it to 1-2 sentences. If the merchant sends another auto-reply after this, we stop.
 """
-            result = _call_claude_reply(pivot_prompt)
+            result = _call_gemini_reply(pivot_prompt)
             if result.get("action") == "send":
                 state.history.append({"role": "vera", "body": result.get("body", "")})
             return result
@@ -215,7 +201,7 @@ The merchant just replied: "{merchant_message}"
 Respond with JSON.
 """
 
-    result = _call_claude_reply(prompt)
+    result = _call_gemini_reply(prompt)
     
     # Validate
     if result.get("action") not in ("send", "wait", "end"):

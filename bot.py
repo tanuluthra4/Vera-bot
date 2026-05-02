@@ -1,7 +1,7 @@
 """
 Vera Bot — magicpin AI Challenge submission
 Team: Tanu Luthra
-Model: claude-sonnet-4-20250514 (temperature=0 for determinism)
+Model: gemini-2.5-flash (temperature=0 for determinism)
 """
 
 from __future__ import annotations
@@ -12,11 +12,9 @@ import time
 import urllib.request
 import urllib.error
 from typing import Optional
-
-# ---------------------------------------------------------------------------
-# PROMPTING SYSTEM
-# ---------------------------------------------------------------------------
-
+import os
+import google.generativeai as genai
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 SYSTEM_PROMPT = """You are Vera, magicpin's merchant AI assistant. You compose WhatsApp messages for Indian merchants.
 
 CORE PRINCIPLES:
@@ -69,7 +67,6 @@ OUTPUT FORMAT — respond ONLY with valid JSON, no markdown fences:
   "suppression_key": "string matching trigger suppression_key or derived from it",
   "rationale": "1-2 sentences: why this message, what it achieves"
 }"""
-
 
 def _build_user_prompt(category: dict, merchant: dict, trigger: dict, customer: Optional[dict]) -> str:
     """Build the user-turn prompt with all four contexts."""
@@ -164,16 +161,11 @@ Respond ONLY with valid JSON.""")
 
     return "\n\n".join(sections)
 
-
-# ---------------------------------------------------------------------------
-# ANTHROPIC API CALL
-# ---------------------------------------------------------------------------
-
-def _call_claude(user_prompt: str, max_retries: int = 2) -> dict:
-    """Call Claude API with retry logic. Returns parsed JSON output dict."""
+def _call_gemini(user_prompt: str, max_retries: int = 2) -> dict:
+    """Call Gemini API with retry logic. Returns parsed JSON output dict."""
     
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "gemini-2.5-flash",
         "max_tokens": 1000,
         "temperature": 0,
         "system": SYSTEM_PROMPT,
@@ -185,11 +177,11 @@ def _call_claude(user_prompt: str, max_retries: int = 2) -> dict:
     for attempt in range(max_retries + 1):
         try:
             req = urllib.request.Request(
-                "https://api.anthropic.com/v1/messages",
+                "https://api.gemini.com/v1/messages",
                 data=json.dumps(payload).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01",
+                    "gemini-version": "2023-06-01",
                 },
                 method="POST"
             )
@@ -207,11 +199,6 @@ def _call_claude(user_prompt: str, max_retries: int = 2) -> dict:
                 time.sleep(2 ** attempt)
                 continue
             raise RuntimeError(f"Claude API call failed after {max_retries+1} attempts: {e}")
-
-
-# ---------------------------------------------------------------------------
-# POST-LLM VALIDATION & REPAIR
-# ---------------------------------------------------------------------------
 
 def _validate_and_repair(result: dict, trigger: dict, customer: Optional[dict]) -> dict:
     """Ensure output has all required fields and valid values."""
@@ -245,11 +232,6 @@ def _validate_and_repair(result: dict, trigger: dict, customer: Optional[dict]) 
 
     return result
 
-
-# ---------------------------------------------------------------------------
-# PUBLIC API
-# ---------------------------------------------------------------------------
-
 def compose(
     category: dict,
     merchant: dict,
@@ -269,6 +251,6 @@ def compose(
         dict with keys: body, cta, send_as, suppression_key, rationale
     """
     user_prompt = _build_user_prompt(category, merchant, trigger, customer)
-    result = _call_claude(user_prompt)
+    result = _call_gemini(user_prompt)
     result = _validate_and_repair(result, trigger, customer)
     return result
