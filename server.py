@@ -20,17 +20,8 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
-
 app = FastAPI(title="Vera Bot", version="1.0.0")
 START_TIME = time.time()
-
-# ---------------------------------------------------------------------------
-# In-memory state (persisted for the lifetime of the process)
-# ---------------------------------------------------------------------------
 
 # (scope, context_id) -> {"version": int, "payload": dict}
 contexts: dict[tuple[str, str], dict] = {}
@@ -44,22 +35,14 @@ conversation_meta: dict[str, dict] = {}
 fired_suppression: set[str] = set()
 conversations_lock = threading.Lock()
 
-# ---------------------------------------------------------------------------
-# Metadata (edit before submitting)
-# ---------------------------------------------------------------------------
-
 TEAM_NAME = "Tanu Luthra"
 TEAM_MEMBERS = ["Tanu Luthra"]
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "gemini-2.5-flash"
 APPROACH = "trigger-routed single-prompt LLM composer with post-LLM validation and auto-reply detection"
 CONTACT_EMAIL = "tanuluthra@example.com"  # UPDATE THIS
 SUBMITTED_AT = datetime.now(timezone.utc).isoformat()
 
-# ---------------------------------------------------------------------------
-# Claude API helper
-# ---------------------------------------------------------------------------
-
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 SYSTEM_COMPOSE = """You are Vera, magicpin's merchant AI assistant. You compose WhatsApp messages for Indian merchants.
 
@@ -132,10 +115,10 @@ Respond ONLY with valid JSON (no markdown fences):
 }"""
 
 
-def _call_claude(system: str, user_content: str, max_tokens: int = 800) -> dict:
-    """Call Claude API. Returns parsed JSON dict from model output."""
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+def _call_gemini(system: str, user_content: str, max_tokens: int = 800) -> dict:
+    """Call Gemini API. Returns parsed JSON dict from model output."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set")
 
     payload = {
         "model": MODEL,
@@ -145,13 +128,15 @@ def _call_claude(system: str, user_content: str, max_tokens: int = 800) -> dict:
         "messages": [{"role": "user", "content": user_content}]
     }
 
+    import google.generativeai as genai
+    
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
+            "x-api-key": GEMINI_API_KEY,
+            "gemini-version": "2023-06-01",
         },
         method="POST"
     )
@@ -163,11 +148,6 @@ def _call_claude(system: str, user_content: str, max_tokens: int = 800) -> dict:
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
     return json.loads(text)
-
-
-# ---------------------------------------------------------------------------
-# Context helpers
-# ---------------------------------------------------------------------------
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
@@ -196,11 +176,6 @@ def _resolve_trigger_contexts(trigger_id: str):
     customer = _get_ctx("customer", customer_id) if customer_id else None
 
     return category, merchant, trg, customer
-
-
-# ---------------------------------------------------------------------------
-# Composer (same prompt logic as bot.py)
-# ---------------------------------------------------------------------------
 
 def _build_compose_prompt(category, merchant, trigger, customer, history=None):
     cat_slug = category.get("slug", "")
@@ -264,7 +239,7 @@ def _build_compose_prompt(category, merchant, trigger, customer, history=None):
 def compose_message(category, merchant, trigger, customer, history=None) -> dict:
     """Compose a message and validate the output."""
     prompt = _build_compose_prompt(category, merchant, trigger, customer, history)
-    result = _call_claude(SYSTEM_COMPOSE, prompt, max_tokens=800)
+    result = _call_gemini(SYSTEM_COMPOSE, prompt, max_tokens=800)
 
     # Validate + repair
     valid_ctas = {"yes_stop", "open_ended", "none"}
@@ -315,7 +290,7 @@ Message: "{message}"
 
 Decide: send, wait, or end. Keep reply to 2-3 sentences if sending. Respond with valid JSON."""
 
-    result = _call_claude(SYSTEM_REPLY, prompt, max_tokens=500)
+    result = _call_gemini(SYSTEM_REPLY, prompt, max_tokens=500)
 
     # Validate
     if result.get("action") not in ("send", "wait", "end"):
@@ -326,11 +301,6 @@ Decide: send, wait, or end. Keep reply to 2-3 sentences if sending. Respond with
         result["rationale"] = "Continuing conversation."
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
 
 class CtxBody(BaseModel):
     scope: str
@@ -352,10 +322,6 @@ class ReplyBody(BaseModel):
     received_at: str
     turn_number: int
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
 @app.get("/v1/healthz")
 async def healthz():
     with contexts_lock:
@@ -369,7 +335,6 @@ async def healthz():
         "contexts_loaded": counts
     }
 
-
 @app.get("/v1/metadata")
 async def metadata():
     return {
@@ -381,7 +346,6 @@ async def metadata():
         "version": "1.0.0",
         "submitted_at": SUBMITTED_AT
     }
-
 
 @app.post("/v1/context")
 async def push_context(body: CtxBody):
@@ -402,7 +366,6 @@ async def push_context(body: CtxBody):
         "ack_id": f"ack_{body.context_id}_v{body.version}",
         "stored_at": datetime.now(timezone.utc).isoformat()
     }
-
 
 @app.post("/v1/tick")
 async def tick(body: TickBody):
