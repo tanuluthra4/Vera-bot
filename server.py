@@ -121,7 +121,7 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def _call_gemini(system, user_content, max_tokens=800):
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="gemini-2.5-flash",
         system_instruction=system
     )
 

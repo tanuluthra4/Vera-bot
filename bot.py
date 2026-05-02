@@ -161,44 +161,26 @@ Respond ONLY with valid JSON.""")
 
     return "\n\n".join(sections)
 
-def _call_gemini(user_prompt: str, max_retries: int = 2) -> dict:
-    """Call Gemini API with retry logic. Returns parsed JSON output dict."""
-    
-    payload = {
-        "model": "gemini-2.5-flash",
-        "max_tokens": 1000,
-        "temperature": 0,
-        "system": SYSTEM_PROMPT,
-        "messages": [
-            {"role": "user", "content": user_prompt}
-        ]
-    }
+import google.generativeai as genai
 
-    for attempt in range(max_retries + 1):
-        try:
-            req = urllib.request.Request(
-                "https://api.gemini.com/v1/messages",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "gemini-version": "2023-06-01",
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            
-            text = data["content"][0]["text"].strip()
-            # Strip markdown fences if present
-            text = re.sub(r'^```(?:json)?\s*', '', text)
-            text = re.sub(r'\s*```$', '', text)
-            return json.loads(text)
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-        except (urllib.error.URLError, json.JSONDecodeError, KeyError) as e:
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            raise RuntimeError(f"Claude API call failed after {max_retries+1} attempts: {e}")
+def _call_gemini(system, user_content, max_tokens=800):
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash", 
+        system_instruction=system
+    )
+
+    response = model.generate_content(
+        user_content,
+        generation_config={
+            "temperature": 0,
+            "max_output_tokens": max_tokens,
+        }
+    )
+
+    text = response.text.strip()
+    return json.loads(text)
 
 def _validate_and_repair(result: dict, trigger: dict, customer: Optional[dict]) -> dict:
     """Ensure output has all required fields and valid values."""
@@ -251,6 +233,6 @@ def compose(
         dict with keys: body, cta, send_as, suppression_key, rationale
     """
     user_prompt = _build_user_prompt(category, merchant, trigger, customer)
-    result = _call_gemini(user_prompt)
+    result = _call_gemini(SYSTEM_PROMPT, user_prompt)
     result = _validate_and_repair(result, trigger, customer)
     return result
