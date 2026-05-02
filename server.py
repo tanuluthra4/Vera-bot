@@ -39,7 +39,7 @@ TEAM_NAME = "Tanu Luthra"
 TEAM_MEMBERS = ["Tanu Luthra"]
 MODEL = "gemini-2.5-flash"
 APPROACH = "trigger-routed single-prompt LLM composer with post-LLM validation and auto-reply detection"
-CONTACT_EMAIL = "tanuluthra@example.com"  # UPDATE THIS
+CONTACT_EMAIL = "your_real_email_here"
 SUBMITTED_AT = datetime.now(timezone.utc).isoformat()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -120,37 +120,29 @@ import google.generativeai as genai
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def _call_gemini(system, user_content, max_tokens=800):
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=system
-    )
-
-    response = model.generate_content(
-        user_content,
-        generation_config={
-            "temperature": 0,
-            "max_output_tokens": max_tokens,
-        }
-    )
-
-    text = response.text.strip()
-
-    text = re.sub(r'^```(?:json)?\s*', '', text)
-    text = re.sub(r'\s*```$', '', text)
-
     try:
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=system
+        )
+
+        response = model.generate_content(
+            user_content,
+            generation_config={
+                "temperature": 0,
+                "max_output_tokens": max_tokens,
+            }
+        )
+
         text = response.text.strip()
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
+
         return json.loads(text)
+
     except Exception as e:
-        return {
-            "body": "Hi, checking in — anything I can help with today?",
-            "cta": "none",
-            "send_as": "vera",
-            "suppression_key": "fallback",
-            "rationale": f"Fallback due to parsing error: {e}"
-        }
+        print("GEMINI ERROR:", str(e))
+        raise RuntimeError(f"Gemini failed: {str(e)}")
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
@@ -177,6 +169,12 @@ def _resolve_trigger_contexts(trigger_id: str):
         return None
 
     customer = _get_ctx("customer", customer_id) if customer_id else None
+
+    print("LINKED:", {
+        "trigger": trigger_id,
+        "merchant": merchant_id,
+        "category": cat_slug
+    })
 
     return category, merchant, trg, customer
 
@@ -386,6 +384,7 @@ async def tick(body: TickBody):
         # Resolve contexts
         resolved = _resolve_trigger_contexts(trg_id)
         if not resolved:
+            print("FAILED RESOLVE:", trg_id)
             continue
 
         category, merchant, trg, customer = resolved
@@ -393,6 +392,7 @@ async def tick(body: TickBody):
 
         with conversations_lock:
             if sup_key in fired_suppression:
+                print("PROCESSING TRIGGER:", trg_id)
                 continue
 
         # Compose

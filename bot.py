@@ -166,21 +166,28 @@ import google.generativeai as genai
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def _call_gemini(system, user_content, max_tokens=800):
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash", 
-        system_instruction=system
-    )
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=system
+        )
 
-    response = model.generate_content(
-        user_content,
-        generation_config={
-            "temperature": 0,
-            "max_output_tokens": max_tokens,
-        }
-    )
+        response = model.generate_content(
+            user_content,
+            generation_config={
+                "temperature": 0,
+                "max_output_tokens": max_tokens,
+            }
+        )
 
-    text = response.text.strip()
-    return json.loads(text)
+        text = response.text.strip()
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+
+        return json.loads(text)
+
+    except Exception as e:
+        raise RuntimeError(f"Gemini failed: {str(e)}")
 
 def _validate_and_repair(result: dict, trigger: dict, customer: Optional[dict]) -> dict:
     """Ensure output has all required fields and valid values."""
