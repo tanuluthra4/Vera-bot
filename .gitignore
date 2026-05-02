@@ -1,1 +1,3 @@
 .env
+.postman/
+*.postman_environment.json
