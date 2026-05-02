@@ -406,73 +406,68 @@ async def tick(body: TickBody):
         if len(actions) >= 10:
             break
 
-        # Resolve contexts
         resolved = _resolve_trigger_contexts(trg_id)
         if not resolved:
-            print("FAILED RESOLVE:", trg_id)
             continue
 
         category, merchant, trg, customer = resolved
-        sup_key = trg.get("suppression_key", trg_id)
 
-        with conversations_lock:
-            if sup_key in fired_suppression:
-                print("PROCESSING TRIGGER:", trg_id)
-                continue
-
-        # Compose
+        # compose first
         try:
             result = compose_message(category, merchant, trg, customer)
         except Exception as e:
             print("ERROR:", str(e))
-
-            actions.append({
-                "conversation_id": f"error_{uuid.uuid4().hex[:6]}",
-                "merchant_id": merchant.get("merchant_id", ""),
-                "customer_id": None,
-                "send_as": "vera",
-                "trigger_id": trg_id,
-                "template_name": "vera_fallback_v1",
-                "template_params": [],
-                "body": "Quick check — want me to help set up something for this?",
-                "cta": "open_ended",
-                "suppression_key": f"error:{trg_id}",
-                "rationale": f"Fallback due to error: {str(e)}"
-            })
-
             continue
+
+        sup_key = result.get("suppression_key") or trg.get("suppression_key", trg_id)
+
+        # suppression check AFTER key is known
+        with conversations_lock:
+            if sup_key in fired_suppression:
+                continue
+
+        # CTA enforcement
+        if result["cta"] == "yes_stop" and "YES" not in result["body"].upper():
+            result["body"] += " Reply YES."
 
         merchant_id = merchant.get("merchant_id", "")
         customer_id = customer.get("customer_id") if customer else None
         conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
 
+        # store conversation + suppression
         with conversations_lock:
             fired_suppression.add(sup_key)
-            conversations[conv_id] = [{"role": "vera", "body": result["body"], "ts": body.now}]
+            conversations[conv_id] = [{
+                "role": "vera",
+                "body": result["body"],
+                "ts": body.now
+            }]
             conversation_meta[conv_id] = {
                 "merchant_id": merchant_id,
                 "customer_id": customer_id,
                 "trigger_id": trg_id
             }
 
-        # Build template params (name, topic, CTA hint)
-        owner = merchant.get("identity", {}).get("owner_first_name", merchant.get("identity", {}).get("name", ""))
+        owner = merchant.get("identity", {}).get(
+            "owner_first_name",
+            merchant.get("identity", {}).get("name", "")
+        )
+
         actions.append({
             "conversation_id": conv_id,
             "merchant_id": merchant_id,
             "customer_id": customer_id,
-            "send_as": result["send_as"],
+            "send_as": result.setdefault("send_as", "vera"),
             "trigger_id": trg_id,
             "template_name": f"vera_{trg.get('kind','generic')}_v1",
             "template_params": [owner, trg.get("kind", "update"), result["cta"]],
-            "body": result["body"],
-            "cta": result["cta"],
-            "suppression_key": result["suppression_key"],
-            "rationale": result["rationale"]
+            "body": result.setdefault("body", "Quick check — want me to help?"),
+            "cta": result.setdefault("cta", "open_ended"),
+            "suppression_key": str(sup_key),
+            "rationale": result.setdefault("rationale", "auto")
         })
 
     return {"actions": actions}
-
 
 @app.post("/v1/reply")
 async def reply(body: ReplyBody):
