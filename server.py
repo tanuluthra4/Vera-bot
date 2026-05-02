@@ -89,7 +89,13 @@ Respond ONLY with valid JSON (no markdown fences):
   "send_as": "vera" | "merchant_on_behalf",
   "suppression_key": "string",
   "rationale": "1-2 sentences"
-}"""
+}
+
+STRICT:
+- Max 3 sentences
+- Use at most 2 persuasion levers
+- Keep CTA under 8 words
+"""
 
 SYSTEM_REPLY = """You are Vera, magicpin's merchant AI assistant, in a live WhatsApp conversation.
 You've already sent the opening message. The merchant (or customer) has replied.
@@ -153,7 +159,7 @@ def _call_gemini(system, user_content, max_tokens=800):
 
         text = response.text.strip()
         print("RAW LLM OUTPUT:\n", text)
-        
+
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
