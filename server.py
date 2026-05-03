@@ -394,7 +394,10 @@ async def push_context(body: CtxBody):
     
     if body.scope == "merchant":
         cat = body.payload.get("category_slug")
-        if cat and ("category", cat) not in contexts:
+        if cat and not any(
+    scope == "category" and ctx["payload"].get("slug") == cat
+    for (scope, _), ctx in contexts.items()
+):
             return {"accepted": False, "reason": "missing_category_dependency"}
 
     key = (body.scope, body.context_id)
@@ -497,8 +500,6 @@ async def tick(body: TickBody):
             "suppression_key": str(sup_key),
             "rationale": result.setdefault("rationale", "auto")
         })
-
-        fired_suppression.add(sup_key)
 
     if not actions:
         return {
