@@ -39,7 +39,7 @@ TEAM_NAME = "Tanu Luthra"
 TEAM_MEMBERS = ["Tanu Luthra"]
 MODEL = "gemini-2.5-flash"
 APPROACH = "trigger-routed single-prompt LLM composer with post-LLM validation and auto-reply detection"
-CONTACT_EMAIL = "your_real_email_here"
+CONTACT_EMAIL = "tanuluthra1@gmail.com"
 SUBMITTED_AT = datetime.now(timezone.utc).isoformat()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -223,7 +223,6 @@ def _call_gemini(system, user_content, trigger, max_tokens=800):
             generation_config={
                 "temperature": 0,
                 "max_output_tokens": max_tokens,
-                "response_mime_type": "application/json"
             }
         )
 
@@ -351,7 +350,7 @@ def _build_compose_prompt(category, merchant, trigger, customer, history=None):
 def compose_message(category, merchant, trigger, customer, history=None) -> dict:
     """Compose a message and validate the output."""
     prompt = _build_compose_prompt(category, merchant, trigger, customer, history)
-    result = _call_gemini(SYSTEM_COMPOSE, prompt, max_tokens=800)
+    result = _call_gemini(SYSTEM_COMPOSE, prompt, trigger, max_tokens=800)
 
     # Validate + repair
     valid_ctas = {"yes_stop", "open_ended", "none"}
@@ -621,22 +620,8 @@ async def tick(body: TickBody):
             })
 
         if not actions:
-            return {
-                "actions": [{
-                    "conversation_id": f"conv_fallback_{uuid.uuid4().hex[:6]}",
-                    "merchant_id": "unknown",
-                    "customer_id": None,
-                    "send_as": "vera",
-                    "trigger_id": "fallback",
-                    "template_name": "vera_fallback_v1",
-                    "template_params": ["User", "update", "open_ended"],
-                    "body": "Quick update — let me know if you'd like details.",
-                    "cta": "open_ended",
-                    "suppression_key": "fallback_global",
-                    "rationale": "fallback"
-                }]
-            }
-
+            return {"actions": []}
+        
         return {"actions": actions}
 
     except Exception as e:
