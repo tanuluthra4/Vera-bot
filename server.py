@@ -391,6 +391,11 @@ async def push_context(body: CtxBody):
     if body.scope not in valid_scopes:
         return {"accepted": False, "reason": "invalid_scope",
                 "details": f"scope must be one of {valid_scopes}"}
+    
+    if body.scope == "merchant":
+        cat = body.payload.get("category_slug")
+        if cat and ("category", cat) not in contexts:
+            return {"accepted": False, "reason": "missing_category_dependency"}
 
     key = (body.scope, body.context_id)
     with contexts_lock:
@@ -412,9 +417,12 @@ async def tick(body: TickBody):
     Suppression prevents re-firing the same message.
     Budget: fire at most 10 actions per tick to stay within the 30s window.
     """
+    MAX_ACTIONS = 10
     actions = []
 
     for trg_id in body.available_triggers:
+        if len(actions) >= MAX_ACTIONS:
+            break
 
         resolved = _resolve_trigger_contexts(trg_id)
         if not resolved:
@@ -428,6 +436,7 @@ async def tick(body: TickBody):
         with conversations_lock:
             if sup_key in fired_suppression:
                 continue
+            fired_suppression.add(sup_key)
 
         try:
             result = compose_message(category, merchant, trg, customer)
@@ -515,7 +524,7 @@ async def reply(body: ReplyBody):
     msg = body.message.lower()
 
     # ✅ STOP handling (HIGHEST PRIORITY)
-    if any(x in msg for x in ["stop", "no", "not interested", "band karo"]):
+    if re.search(r"\b(stop|not interested|band karo)\b", msg):
         return {
             "action": "end",
             "rationale": "explicit opt-out detected"
