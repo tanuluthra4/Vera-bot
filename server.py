@@ -450,22 +450,18 @@ async def push_context(body: CtxBody):
 
 @app.post("/v1/tick")
 async def tick(body: TickBody):
-    """
-    For each available trigger, check if we should fire a message.
-    Suppression prevents re-firing the same message.
-    Budget: fire at most 10 actions per tick to stay within the 30s window.
-    """
     MAX_ACTIONS = 10
     actions = []
 
-    body.available_triggers.sort(
-        key=lambda x: priority(_get_ctx("trigger", x)),
-        reverse=True
-    )
+    # 1. Filter valid triggers only (no mutation of input list)
+    triggers_sorted = [
+        t for t in body.available_triggers
+        if _get_ctx("trigger", t) is not None
+    ]
 
-    triggers_sorted = sorted(
-        body.available_triggers,
-        key=lambda t: priority(_get_ctx("trigger", t)) if _get_ctx("trigger", t) else 0,
+    # 2. Deterministic ranking
+    triggers_sorted.sort(
+        key=lambda t: priority(_get_ctx("trigger", t)),
         reverse=True
     )
 
@@ -481,8 +477,12 @@ async def tick(body: TickBody):
         category, merchant, trg, customer = resolved
 
         merchant_id = merchant.get("merchant_id", "")
+        customer_id = customer.get("customer_id") if customer else None
+
+        # SINGLE SOURCE OF TRUTH suppression key
         sup_key = trg.get("suppression_key") or f"{trg_id}:{merchant_id}"
 
+        # fast atomic suppression check
         with conversations_lock:
             if sup_key in fired_suppression:
                 continue
@@ -490,8 +490,6 @@ async def tick(body: TickBody):
 
         try:
             result = compose_message(category, merchant, trg, customer)
-            if not result.get("body"):
-                continue
         except Exception:
             result = {
                 "body": "...",
@@ -502,54 +500,57 @@ async def tick(body: TickBody):
             }
 
         # CTA enforcement
-        if result["cta"] == "yes_stop" and "YES" not in result["body"].upper():
+        if result.get("cta") == "yes_stop" and "YES" not in result.get("body", "").upper():
             result["body"] += " Reply YES."
 
-        merchant_id = merchant.get("merchant_id", "")
-        customer_id = customer.get("customer_id") if customer else None
-
-        sup_key = f"{trg_id}:{merchant_id}"
-        conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
-
-        # store conversation + suppression
-        with conversations_lock:
-            sup_key = result.get("suppression_key") or trg.get("suppression_key") or trg_id
-            conversations[conv_id] = [{
-                "role": "vera",
-                "body": result["body"],
-                "ts": body.now
-            }]
-            conversation_meta[conv_id] = {
-                "merchant_id": merchant_id,
-                "customer_id": customer_id,
-                "trigger_id": trg_id
-            }
+        if not result.get("body"):
+            result["body"] = "Quick update — want me to help with this?"
 
         owner = merchant.get("identity", {}).get(
             "owner_first_name",
             merchant.get("identity", {}).get("name", "")
         )
 
-        if result.get("cta") not in {"yes_stop", "open_ended", "none"}:
-            result["cta"] = "open_ended"
+        conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
 
-        if not result.get("body"):
-            result["body"] = "Quick update — want me to help with this?"
+        # store conversation safely
+        with conversations_lock:
+            conversations[conv_id] = [{
+                "role": "vera",
+                "body": result["body"],
+                "ts": body.now
+            }]
+
+            conversation_meta[conv_id] = {
+                "merchant_id": merchant_id,
+                "customer_id": customer_id,
+                "trigger_id": trg_id
+            }
+
+        # normalize CTA once
+        cta = result.get("cta", "open_ended")
+        if cta not in {"yes_stop", "open_ended", "none"}:
+            cta = "open_ended"
 
         actions.append({
             "conversation_id": conv_id,
             "merchant_id": merchant_id,
             "customer_id": customer_id,
-            "send_as": result.setdefault("send_as", "vera"),
+            "send_as": result.get("send_as", "vera"),
             "trigger_id": trg_id,
             "template_name": f"vera_{trg.get('kind','generic')}_v1",
-            "template_params": [owner, trg.get("kind", "update"), result["cta"]],
-            "body": result.setdefault("body", "Quick check — want me to help?"),
-            "cta": result.setdefault("cta", "open_ended"),
+            "template_params": [
+                owner,
+                trg.get("kind", "update"),
+                cta
+            ],
+            "body": result["body"],
+            "cta": cta,
             "suppression_key": sup_key,
-            "rationale": result.setdefault("rationale", "auto")
+            "rationale": result.get("rationale", "auto")
         })
 
+    # fallback if no actions
     if not actions:
         return {
             "actions": [{
