@@ -155,25 +155,35 @@ def log(stage, data):
         "data": str(data)[:500]
     }))
 
-def fallback_response(trigger):
+def fallback_response(trigger, merchant=None):
     kind = trigger.get("kind", "update")
+    payload = trigger.get("payload", {}) or {}
+    owner = (merchant or {}).get("identity", {}).get("owner_first_name", "")
+    signals = (merchant or {}).get("signals", [])
+
+    drop = payload.get("drop_percent")
 
     if kind == "perf_dip":
-        msg = "Your performance dropped recently — want me to share a quick fix?"
+        if drop:
+            msg = f"{owner}, your visibility dropped by {drop} — this can reduce incoming bookings."
+        elif signals:
+            msg = f"{owner}, your visibility dropped ({signals[0]}) — this may reduce demand."
+        else:
+            msg = f"{owner}, your performance dropped — this may reduce incoming demand."
+
+        msg += " Want me to fix it? Reply YES."
         cta = "yes_stop"
-    elif kind == "recall_due":
-        msg = "You have pending customers due for recall — want me to handle it?"
-        cta = "yes_stop"
+
     else:
-        msg = "Quick update — want more details?"
+        msg = f"{owner}, quick update based on your account activity."
         cta = "open_ended"
 
     return {
-        "body": msg if cta != "yes_stop" else msg + " Reply YES.",
+        "body": msg.strip(),
         "cta": cta,
         "send_as": "vera",
-        "suppression_key": "llm_fallback",
-        "rationale": "LLM failure fallback"
+        "suppression_key": trigger.get("suppression_key", "fallback"),
+        "rationale": f"Fallback aligned with {kind} using available context"
     }
 
 def safe_parse_json(text: str):
@@ -571,7 +581,7 @@ async def tick(body: TickBody):
                     "cta": "open_ended",
                     "send_as": "vera",
                     "suppression_key": f"fallback:{trg_id}",
-                    "rationale": "fallback"
+                    "rationale": f"Fallback aligned with {trg.get('kind','unknown')} trigger"
                 }
 
             body_text = result.get("body", "")
