@@ -187,25 +187,31 @@ def _call_gemini(system, user_content, max_tokens=800):
             }
         )
 
-        text = response.text.strip()
+        raw = response.text.strip()
 
+        # 1. STRICT parse (fast path)
         try:
-            return json.loads(text)
+            return json.loads(raw)
         except Exception:
-            # HARD RECOVERY: extract first JSON block safely
-            match = re.search(r'\{[\s\S]*\}', text)
-            if match:
-                return json.loads(match.group(0))
+            pass
 
-            raise ValueError("Invalid JSON from model")
+        # 2. SAFE parser (repair layer)
+        try:
+            return safe_parse_json(raw)
+        except Exception:
+            pass
 
-    except Exception as e:
+        # 3. HARD FAIL (observability)
+        print("❌ LLM RAW OUTPUT:", raw)
+        raise ValueError("Unrecoverable JSON")
+
+    except Exception:
         return {
-            "body": "Quick update — want me to help with this?",
+            "body": "Your visibility dropped recently — I’ve prepared a fix based on your data. Reply YES.",
             "cta": "yes_stop",
             "send_as": "vera",
-            "suppression_key": "fallback",
-            "rationale": "LLM failure fallback"
+            "suppression_key": "llm_hard_fallback",
+            "rationale": "LLM hard failure"
         }
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
