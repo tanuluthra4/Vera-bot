@@ -221,7 +221,7 @@ import google.generativeai as genai
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-def _call_gemini(system, user_content, trigger, max_tokens=800):
+def _call_gemini(system, user_content, trigger, merchant=None, max_tokens=800):
     try:
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",
@@ -261,8 +261,9 @@ def _call_gemini(system, user_content, trigger, max_tokens=800):
         raise ValueError("Unrecoverable JSON")
 
     except Exception as e:
-        log("GEMINI_FAIL", e)
-        return fallback_response(trigger)
+        log("GEMINI_FAIL", str(e)) 
+        print("GEMINI EXCEPTION:", repr(e))  
+        return fallback_response(trigger, merchant)
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
@@ -360,8 +361,7 @@ def _build_compose_prompt(category, merchant, trigger, customer, history=None):
 def compose_message(category, merchant, trigger, customer, history=None) -> dict:
     """Compose a message and validate the output."""
     prompt = _build_compose_prompt(category, merchant, trigger, customer, history)
-    result = _call_gemini(SYSTEM_COMPOSE, prompt, trigger, max_tokens=800)
-
+    result = _call_gemini(SYSTEM_COMPOSE, prompt, trigger, merchant=merchant, max_tokens=800)
     # Validate + repair
     valid_ctas = {"yes_stop", "open_ended", "none"}
     if result.get("cta") not in valid_ctas:
@@ -420,7 +420,7 @@ Do NOT repeat previous messages in history.
 If similar intent already answered → shorten or escalate CTA.
 Decide: send, wait, or end. Keep reply to 2-3 sentences if sending. Respond with valid JSON."""
 
-    result = _call_gemini(SYSTEM_REPLY, prompt, max_tokens=500)
+    result = _call_gemini(SYSTEM_REPLY, prompt, max_tokens=500, merchant=merchant)
 
     # Validate
     if result.get("action") not in ("send", "wait", "end"):
