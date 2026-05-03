@@ -482,123 +482,146 @@ async def tick(body: TickBody):
     MAX_ACTIONS = 10
     actions = []
 
-    # 1. Filter valid triggers only (no mutation of input list)
-    triggers_sorted = [
-        t for t in body.available_triggers
-        if _get_ctx("trigger", t) is not None
-    ]
+    try:
+        # 1. Filter valid triggers
+        triggers_sorted = [
+            t for t in body.available_triggers
+            if _get_ctx("trigger", t) is not None
+        ]
 
-    # 2. Deterministic ranking
-    triggers_sorted.sort(
-        key=lambda t: priority(_get_ctx("trigger", t)),
-        reverse=True
-    )
+        def safe_priority(t):
+            ctx = _get_ctx("trigger", t)
+            return priority(ctx) if ctx else -1
 
-    for trg_id in triggers_sorted:
-        if len(actions) >= MAX_ACTIONS:
-            break
+        triggers_sorted.sort(key=safe_priority, reverse=True)
 
-        resolved = _resolve_trigger_contexts(trg_id)
-        if not resolved:
-            print("FAILED RESOLVE:", trg_id)
-            continue
+        for trg_id in triggers_sorted:
+            if len(actions) >= MAX_ACTIONS:
+                break
 
-        category, merchant, trg, customer = resolved
-
-        merchant_id = merchant.get("merchant_id", "")
-        customer_id = customer.get("customer_id") if customer else None
-
-        # SINGLE SOURCE OF TRUTH suppression key
-        sup_key = trg.get("suppression_key") or f"{trg_id}:{merchant_id}"
-
-        # fast atomic suppression check
-        with conversations_lock:
-            if sup_key in fired_suppression:
+            resolved = _resolve_trigger_contexts(trg_id)
+            if not resolved:
+                print("FAILED RESOLVE:", trg_id)
                 continue
-            fired_suppression.add(sup_key)
 
-        try:
-            result = compose_message(category, merchant, trg, customer)
-        except Exception:
-            result = {
-                "body": "...",
-                "cta": "yes_stop",
-                "send_as": "vera",
-                "suppression_key": f"fallback:{trg_id}",
-                "rationale": "fallback"
-            }
+            category, merchant, trg, customer = resolved
 
-        # CTA enforcement
-        if result.get("cta") == "yes_stop" and "YES" not in result.get("body", "").upper():
-            result["body"] += " Reply YES."
+            merchant_id = merchant.get("merchant_id", "")
+            customer_id = customer.get("customer_id") if customer else None
 
-        if not result.get("body"):
-            result["body"] = "Quick update — want me to help with this?"
+            sup_key = trg.get("suppression_key") or f"{trg_id}:{merchant_id}"
 
-        owner = merchant.get("identity", {}).get(
-            "owner_first_name",
-            merchant.get("identity", {}).get("name", "")
-        )
+            # 2. Compose FIRST (no suppression yet)
+            try:
+                result = compose_message(category, merchant, trg, customer)
+            except Exception:
+                result = {
+                    "body": "...",
+                    "cta": "yes_stop",
+                    "send_as": "vera",
+                    "suppression_key": f"fallback:{trg_id}",
+                    "rationale": "fallback"
+                }
 
-        conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
+            # 3. Basic validation BEFORE anything else
+            body = result.get("body")
+            if not body or len(body) > 300:
+                continue
 
-        # store conversation safely
-        with conversations_lock:
-            conversations[conv_id] = [{
-                "role": "vera",
-                "body": result["body"],
-                "ts": body.now
-            }]
+            cta = result.get("cta", "open_ended")
+            if cta not in {"yes_stop", "open_ended", "none"}:
+                cta = "open_ended"
 
-            conversation_meta[conv_id] = {
+            # 4. CTA enforcement (safe)
+            if cta == "yes_stop" and "YES" not in body.upper():
+                body += " Reply YES."
+
+            result["body"] = body
+            result["cta"] = cta
+
+            # 5. Suppression ONLY AFTER VALID MESSAGE
+            with conversations_lock:
+                if sup_key in fired_suppression:
+                    continue
+                fired_suppression.add(sup_key)
+
+            owner = merchant.get("identity", {}).get(
+                "owner_first_name",
+                merchant.get("identity", {}).get("name", "")
+            )
+
+            conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
+
+            # 6. Store conversation
+            with conversations_lock:
+                conversations[conv_id] = [{
+                    "role": "vera",
+                    "body": body,
+                    "ts": body
+                }]
+
+                conversation_meta[conv_id] = {
+                    "merchant_id": merchant_id,
+                    "customer_id": customer_id,
+                    "trigger_id": trg_id
+                }
+
+            # 7. Build action
+            actions.append({
+                "conversation_id": conv_id,
                 "merchant_id": merchant_id,
                 "customer_id": customer_id,
-                "trigger_id": trg_id
+                "send_as": result.get("send_as", "vera"),
+                "trigger_id": trg_id,
+                "template_name": f"vera_{trg.get('kind','generic')}_v1",
+                "template_params": [
+                    owner,
+                    trg.get("kind", "update"),
+                    cta
+                ],
+                "body": body,
+                "cta": cta,
+                "suppression_key": sup_key,
+                "rationale": result.get("rationale", "auto")
+            })
+
+        # 8. Fallback
+        if not actions:
+            return {
+                "actions": [{
+                    "conversation_id": f"conv_fallback_{uuid.uuid4().hex[:6]}",
+                    "merchant_id": "unknown",
+                    "customer_id": None,
+                    "send_as": "vera",
+                    "trigger_id": "fallback",
+                    "template_name": "vera_fallback_v1",
+                    "template_params": ["User", "update", "open_ended"],
+                    "body": "Quick update — let me know if you'd like details.",
+                    "cta": "open_ended",
+                    "suppression_key": "fallback_global",
+                    "rationale": "global fallback for empty tick"
+                }]
             }
 
-        # normalize CTA once
-        cta = result.get("cta", "open_ended")
-        if cta not in {"yes_stop", "open_ended", "none"}:
-            cta = "open_ended"
+        return {"actions": actions}
 
-        actions.append({
-            "conversation_id": conv_id,
-            "merchant_id": merchant_id,
-            "customer_id": customer_id,
-            "send_as": result.get("send_as", "vera"),
-            "trigger_id": trg_id,
-            "template_name": f"vera_{trg.get('kind','generic')}_v1",
-            "template_params": [
-                owner,
-                trg.get("kind", "update"),
-                cta
-            ],
-            "body": result["body"],
-            "cta": cta,
-            "suppression_key": sup_key,
-            "rationale": result.get("rationale", "auto")
-        })
-
-    # fallback if no actions
-    if not actions:
+    except Exception as e:
         return {
             "actions": [{
-                "conversation_id": f"conv_fallback_{uuid.uuid4().hex[:6]}",
+                "conversation_id": "conv_error",
                 "merchant_id": "unknown",
                 "customer_id": None,
                 "send_as": "vera",
-                "trigger_id": "fallback",
-                "template_name": "vera_fallback_v1",
-                "template_params": ["User", "update", "open_ended"],
+                "trigger_id": "error",
+                "template_name": "vera_error_v1",
+                "template_params": ["User", "error", "open_ended"],
                 "body": "Quick update — let me know if you'd like details.",
                 "cta": "open_ended",
-                "suppression_key": "fallback_global",
-                "rationale": "global fallback for empty tick"
+                "suppression_key": "error_global",
+                "rationale": f"tick crash fallback: {str(e)[:50]}"
             }]
         }
-
-    return {"actions": actions}
-
+    
 @app.post("/v1/reply")
 async def reply(body: ReplyBody):
     msg = body.message.lower()
