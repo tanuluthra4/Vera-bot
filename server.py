@@ -484,24 +484,23 @@ async def tick(body: TickBody):
 
     try:
         # 1. Filter valid triggers
-        triggers_sorted = [
+        triggers = [
             t for t in body.available_triggers
             if _get_ctx("trigger", t) is not None
         ]
 
-        def safe_priority(t):
+        def score(t):
             ctx = _get_ctx("trigger", t)
             return priority(ctx) if ctx else -1
 
-        triggers_sorted.sort(key=safe_priority, reverse=True)
+        triggers.sort(key=score, reverse=True)
 
-        for trg_id in triggers_sorted:
+        for trg_id in triggers:
             if len(actions) >= MAX_ACTIONS:
                 break
 
             resolved = _resolve_trigger_contexts(trg_id)
             if not resolved:
-                print("FAILED RESOLVE:", trg_id)
                 continue
 
             category, merchant, trg, customer = resolved
@@ -511,39 +510,34 @@ async def tick(body: TickBody):
 
             sup_key = trg.get("suppression_key") or f"{trg_id}:{merchant_id}"
 
-            # 2. Compose FIRST (no suppression yet)
+            # 2. suppression check FIRST (correct place)
+            with conversations_lock:
+                if sup_key in fired_suppression:
+                    continue
+                fired_suppression.add(sup_key)
+
+            # 3. compose
             try:
                 result = compose_message(category, merchant, trg, customer)
             except Exception:
                 result = {
-                    "body": "...",
-                    "cta": "yes_stop",
+                    "body": "Quick update — want me to help with this?",
+                    "cta": "open_ended",
                     "send_as": "vera",
                     "suppression_key": f"fallback:{trg_id}",
                     "rationale": "fallback"
                 }
 
-            # 3. Basic validation BEFORE anything else
-            body = result.get("body")
-            if not body or len(body) > 300:
+            body_text = result.get("body", "")
+            if not body_text or len(body_text) > 300:
                 continue
 
             cta = result.get("cta", "open_ended")
             if cta not in {"yes_stop", "open_ended", "none"}:
                 cta = "open_ended"
 
-            # 4. CTA enforcement (safe)
-            if cta == "yes_stop" and "YES" not in body.upper():
-                body += " Reply YES."
-
-            result["body"] = body
-            result["cta"] = cta
-
-            # 5. Suppression ONLY AFTER VALID MESSAGE
-            with conversations_lock:
-                if sup_key in fired_suppression:
-                    continue
-                fired_suppression.add(sup_key)
+            if cta == "yes_stop" and "YES" not in body_text.upper():
+                body_text += " Reply YES."
 
             owner = merchant.get("identity", {}).get(
                 "owner_first_name",
@@ -552,12 +546,11 @@ async def tick(body: TickBody):
 
             conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
 
-            # 6. Store conversation
             with conversations_lock:
                 conversations[conv_id] = [{
                     "role": "vera",
-                    "body": body,
-                    "ts": body
+                    "body": body_text,
+                    "ts": body.now
                 }]
 
                 conversation_meta[conv_id] = {
@@ -566,7 +559,6 @@ async def tick(body: TickBody):
                     "trigger_id": trg_id
                 }
 
-            # 7. Build action
             actions.append({
                 "conversation_id": conv_id,
                 "merchant_id": merchant_id,
@@ -574,18 +566,13 @@ async def tick(body: TickBody):
                 "send_as": result.get("send_as", "vera"),
                 "trigger_id": trg_id,
                 "template_name": f"vera_{trg.get('kind','generic')}_v1",
-                "template_params": [
-                    owner,
-                    trg.get("kind", "update"),
-                    cta
-                ],
-                "body": body,
+                "template_params": [owner, trg.get("kind", "update"), cta],
+                "body": body_text,
                 "cta": cta,
                 "suppression_key": sup_key,
                 "rationale": result.get("rationale", "auto")
             })
 
-        # 8. Fallback
         if not actions:
             return {
                 "actions": [{
@@ -599,7 +586,7 @@ async def tick(body: TickBody):
                     "body": "Quick update — let me know if you'd like details.",
                     "cta": "open_ended",
                     "suppression_key": "fallback_global",
-                    "rationale": "global fallback for empty tick"
+                    "rationale": "fallback"
                 }]
             }
 
@@ -618,7 +605,7 @@ async def tick(body: TickBody):
                 "body": "Quick update — let me know if you'd like details.",
                 "cta": "open_ended",
                 "suppression_key": "error_global",
-                "rationale": f"tick crash fallback: {str(e)[:50]}"
+                "rationale": str(e)[:50]
             }]
         }
     
