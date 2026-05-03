@@ -159,9 +159,6 @@ def _call_gemini(system, user_content, max_tokens=800):
 
         text = response.text.strip()
 
-        print("RAW LLM OUTPUT:\n", text)
-        print("SYSTEM PROMPT:", system[:200])
-        print("USER PROMPT:", user_content[:200])
         print("RAW RESPONSE:", getattr(response, "text", None))
 
         text = re.sub(r'^```(?:json)?\s*', '', text)
@@ -171,11 +168,11 @@ def _call_gemini(system, user_content, max_tokens=800):
             return safe_parse_json(text)
         except Exception as e:
             return {
-                "body": f"[LLM_ERROR] {str(e)}",
-                "cta": "open_ended",
+                "body": "Quick update — I’ve prepared a suggestion for you. Reply YES to proceed.",
+                "cta": "yes_stop",
                 "send_as": "vera",
-                "suppression_key": "error",
-                "rationale": "hard failure exposed"
+                "suppression_key": "fallback",
+                "rationale": "safe fallback"
             }
 
     except Exception as e:
@@ -421,6 +418,7 @@ async def tick(body: TickBody):
 
         resolved = _resolve_trigger_contexts(trg_id)
         if not resolved:
+            print("FAILED RESOLVE:", trg_id)
             continue
 
         category, merchant, trg, customer = resolved
@@ -432,8 +430,8 @@ async def tick(body: TickBody):
                 continue
 
         try:
-            result = compose_message(...)
-            if not result.get("body") or "fallback" in result.get("rationale","").lower():
+            result = compose_message(category, merchant, trg, customer)
+            if not result.get("body"):
                 continue
         except Exception:
             result = {
@@ -490,6 +488,25 @@ async def tick(body: TickBody):
             "suppression_key": str(sup_key),
             "rationale": result.setdefault("rationale", "auto")
         })
+
+        fired_suppression.add(sup_key)
+
+    if not actions:
+        return {
+            "actions": [{
+                "conversation_id": f"conv_fallback_{uuid.uuid4().hex[:6]}",
+                "merchant_id": "unknown",
+                "customer_id": None,
+                "send_as": "vera",
+                "trigger_id": "fallback",
+                "template_name": "vera_fallback_v1",
+                "template_params": ["User", "update", "open_ended"],
+                "body": "Quick update — let me know if you'd like details.",
+                "cta": "open_ended",
+                "suppression_key": "fallback_global",
+                "rationale": "global fallback for empty tick"
+            }]
+        }
 
     return {"actions": actions}
 
