@@ -163,7 +163,16 @@ def _call_gemini(system, user_content, max_tokens=800):
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
-        return safe_parse_json(text)
+        try:
+            return safe_parse_json(text)
+        except:
+            return {
+                "body": "Quick check — want help improving this?",
+                "cta": "yes_stop",
+                "send_as": "vera",
+                "suppression_key": "fallback",
+                "rationale": "JSON parse fallback"
+            }
 
     except Exception as e:
         print("GEMINI ERROR:", str(e))
@@ -314,6 +323,8 @@ Trigger payload: {json.dumps(trg.get('payload',{}))}
 From: {'merchant' if not customer_id else 'customer'}
 Message: "{message}"
 
+Do NOT repeat previous messages in history.
+If similar intent already answered → shorten or escalate CTA.
 Decide: send, wait, or end. Keep reply to 2-3 sentences if sending. Respond with valid JSON."""
 
     result = _call_gemini(SYSTEM_REPLY, prompt, max_tokens=500)
@@ -403,8 +414,6 @@ async def tick(body: TickBody):
     actions = []
 
     for trg_id in body.available_triggers:
-        if len(actions) >= 10:
-            break
 
         resolved = _resolve_trigger_contexts(trg_id)
         if not resolved:
@@ -412,19 +421,22 @@ async def tick(body: TickBody):
 
         category, merchant, trg, customer = resolved
 
-        # compose first
-        try:
-            result = compose_message(category, merchant, trg, customer)
-        except Exception as e:
-            print("ERROR:", str(e))
-            continue
+        sup_key = trg.get("suppression_key", trg_id)
 
-        sup_key = result.get("suppression_key") or trg.get("suppression_key", trg_id)
-
-        # suppression check AFTER key is known
         with conversations_lock:
             if sup_key in fired_suppression:
                 continue
+
+        try:
+            result = compose_message(...)
+        except Exception:
+            result = {
+                "body": "...",
+                "cta": "yes_stop",
+                "send_as": "vera",
+                "suppression_key": f"fallback:{trg_id}",
+                "rationale": "fallback"
+            }
 
         # CTA enforcement
         if result["cta"] == "yes_stop" and "YES" not in result["body"].upper():
@@ -436,7 +448,7 @@ async def tick(body: TickBody):
 
         # store conversation + suppression
         with conversations_lock:
-            fired_suppression.add(sup_key)
+            sup_key = result.get("suppression_key") or trg.get("suppression_key") or trg_id
             conversations[conv_id] = [{
                 "role": "vera",
                 "body": result["body"],
@@ -452,6 +464,15 @@ async def tick(body: TickBody):
             "owner_first_name",
             merchant.get("identity", {}).get("name", "")
         )
+
+        if result.get("cta") not in {"yes_stop", "open_ended", "none"}:
+            result["cta"] = "open_ended"
+
+        if not result.get("body"):
+            result["body"] = "Quick update — want me to help with this?"
+
+        if result.get("action") == "send" and "body" not in result:
+            result["body"] = "Noted."
 
         actions.append({
             "conversation_id": conv_id,
@@ -471,12 +492,45 @@ async def tick(body: TickBody):
 
 @app.post("/v1/reply")
 async def reply(body: ReplyBody):
-    """Handle a reply from the judge (merchant or customer)."""
+    msg = body.message.lower()
+
+    # ✅ STOP handling (HIGHEST PRIORITY)
+    if any(x in msg for x in ["stop", "no", "not interested", "band karo"]):
+        return {
+            "action": "end",
+            "rationale": "explicit opt-out detected"
+        }
+
+    # ✅ AUTO-REPLY detection
+    auto_patterns = [
+        "thank you for contacting",
+        "we will get back",
+        "automated message",
+        "aapki jaankari ke liye"
+    ]
+
+    if any(p in msg for p in auto_patterns):
+        return {
+            "action": "end",
+            "rationale": "Auto-reply detected"
+        }
+
+    # ✅ YES handling (don’t send to LLM)
+    if any(x in msg for x in ["yes", "haan", "ok", "go ahead"]):
+        return {
+            "action": "send",
+            "body": "Great — I’ll take this forward and share results shortly.",
+            "cta": "none",
+            "rationale": "User confirmed intent"
+        }
+
+    # ===== only now call LLM =====
+
     with conversations_lock:
         if body.conversation_id not in conversations:
             conversations[body.conversation_id] = []
-        history = conversations[body.conversation_id]
-        history.append({
+
+        conversations[body.conversation_id].append({
             "role": body.from_role,
             "body": body.message,
             "ts": body.received_at
@@ -491,25 +545,26 @@ async def reply(body: ReplyBody):
             turn_number=body.turn_number
         )
     except Exception as e:
-        # Graceful degradation — don't time out
-        result = {
+        return {
             "action": "send",
-            "body": "Got it! Let me look into that and come back to you shortly.",
+            "body": "Got it — I’ll check and get back to you.",
             "cta": "none",
-            "rationale": f"Fallback response due to error: {e}"
+            "rationale": f"Fallback due to error: {e}"
         }
 
-    # Log bot's reply in history
-    if result.get("action") == "send":
-        with conversations_lock:
-            conversations[body.conversation_id].append({
-                "role": "vera",
-                "body": result.get("body", ""),
-                "ts": datetime.now(timezone.utc).isoformat()
-            })
+    # ensure valid action
+    if result.get("action") not in ("send", "wait", "end"):
+        result["action"] = "send"
+
+    if "action" not in result:
+        result = {
+            "action": "send",
+            "body": result.get("body", "Got it."),
+            "cta": "none",
+            "rationale": "repaired missing action"
+        }
 
     return result
-
 
 @app.post("/v1/teardown")
 async def teardown():
