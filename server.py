@@ -183,30 +183,30 @@ def _call_gemini(system, user_content, max_tokens=800):
             generation_config={
                 "temperature": 0,
                 "max_output_tokens": max_tokens,
+                "response_mime_type": "application/json"
             }
         )
 
         text = response.text.strip()
 
-        print("RAW RESPONSE:", getattr(response, "text", None))
-
-        text = re.sub(r'^```(?:json)?\s*', '', text)
-        text = re.sub(r'\s*```$', '', text)
-
         try:
-            return safe_parse_json(text)
-        except Exception as e:
-            return {
-                "body": "Quick update — I’ve prepared a suggestion for you. Reply YES to proceed.",
-                "cta": "yes_stop",
-                "send_as": "vera",
-                "suppression_key": "fallback",
-                "rationale": "safe fallback"
-            }
+            return json.loads(text)
+        except Exception:
+            # HARD RECOVERY: extract first JSON block safely
+            match = re.search(r'\{[\s\S]*\}', text)
+            if match:
+                return json.loads(match.group(0))
+
+            raise ValueError("Invalid JSON from model")
 
     except Exception as e:
-        print("GEMINI ERROR:", str(e))
-        raise RuntimeError(f"Gemini failed: {str(e)}")
+        return {
+            "body": "Quick update — want me to help with this?",
+            "cta": "yes_stop",
+            "send_as": "vera",
+            "suppression_key": "fallback",
+            "rationale": "LLM failure fallback"
+        }
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
