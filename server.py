@@ -155,7 +155,7 @@ def safe_parse_json(text: str):
     text = re.sub(r'\s*```$', '', text)
 
     # extract JSON block
-    match = re.search(r'\{.*\}', text, re.DOTALL)
+    match = re.search(r'\{[\s\S]*?\}', text)
     if not match:
         raise ValueError("No JSON found")
 
@@ -187,31 +187,41 @@ def _call_gemini(system, user_content, max_tokens=800):
             }
         )
 
-        raw = response.text.strip()
+        # ✅ SAFE extraction
+        raw = getattr(response, "text", None)
 
-        # 1. STRICT parse (fast path)
+        if not raw:
+            print("⚠️ EMPTY RESPONSE:", response)
+            raise ValueError("Empty response from Gemini")
+
+        raw = raw.strip()
+
+        # ===== 1. STRICT PARSE =====
         try:
             return json.loads(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            print("⚠️ STRICT PARSE FAILED")
 
-        # 2. SAFE parser (repair layer)
+        # ===== 2. SAFE PARSE =====
         try:
             return safe_parse_json(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            print("⚠️ SAFE PARSE FAILED")
 
-        # 3. HARD FAIL (observability)
-        print("❌ LLM RAW OUTPUT:", raw)
+        # ===== 3. HARD FAIL =====
+        print("❌ UNRECOVERABLE OUTPUT:")
+        print(raw)
         raise ValueError("Unrecoverable JSON")
 
-    except Exception:
+    except Exception as e:
+        print("🚨 GEMINI FAILURE:", str(e))
+
         return {
             "body": "Your visibility dropped recently — I’ve prepared a fix based on your data. Reply YES.",
             "cta": "yes_stop",
             "send_as": "vera",
             "suppression_key": "llm_hard_fallback",
-            "rationale": "LLM hard failure"
+            "rationale": f"LLM failure: {str(e)[:50]}"
         }
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
