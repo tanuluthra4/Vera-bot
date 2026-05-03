@@ -158,20 +158,24 @@ def _call_gemini(system, user_content, max_tokens=800):
         )
 
         text = response.text.strip()
+
         print("RAW LLM OUTPUT:\n", text)
+        print("SYSTEM PROMPT:", system[:200])
+        print("USER PROMPT:", user_content[:200])
+        print("RAW RESPONSE:", getattr(response, "text", None))
 
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
         try:
             return safe_parse_json(text)
-        except:
+        except Exception as e:
             return {
-                "body": "Quick check — want help improving this?",
-                "cta": "yes_stop",
+                "body": f"[LLM_ERROR] {str(e)}",
+                "cta": "open_ended",
                 "send_as": "vera",
-                "suppression_key": "fallback",
-                "rationale": "JSON parse fallback"
+                "suppression_key": "error",
+                "rationale": "hard failure exposed"
             }
 
     except Exception as e:
@@ -429,6 +433,8 @@ async def tick(body: TickBody):
 
         try:
             result = compose_message(...)
+            if not result.get("body") or "fallback" in result.get("rationale","").lower():
+                continue
         except Exception:
             result = {
                 "body": "...",
@@ -470,9 +476,6 @@ async def tick(body: TickBody):
 
         if not result.get("body"):
             result["body"] = "Quick update — want me to help with this?"
-
-        if result.get("action") == "send" and "body" not in result:
-            result["body"] = "Noted."
 
         actions.append({
             "conversation_id": conv_id,
