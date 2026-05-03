@@ -305,6 +305,13 @@ def reply_message(conversation_id: str, merchant_id: str, customer_id: Optional[
     trigger_id = meta.get("trigger_id", "")
     trg = _get_ctx("trigger", trigger_id) if trigger_id else {}
     merchant = _get_ctx("merchant", merchant_id)
+    if not merchant:
+        return {
+            "action": "send",
+            "body": "Got it — I’ll check and get back to you.",
+            "cta": "none",
+            "rationale": "missing merchant context fallback"
+        }
     category = _get_ctx("category", merchant.get("category_slug", "")) if merchant else {}
     customer = _get_ctx("customer", customer_id) if customer_id else None
 
@@ -339,6 +346,24 @@ Decide: send, wait, or end. Keep reply to 2-3 sentences if sending. Respond with
         result["rationale"] = "Continuing conversation."
 
     return result
+
+def priority(trg):
+    if not trg:
+        return 0
+
+    kind = trg.get("kind", "")
+    urgency = trg.get("urgency", 1)
+
+    base = {
+        "perf_dip": 5,
+        "recall_due": 5,
+        "renewal_due": 4,
+        "festival_upcoming": 3,
+        "research_digest": 2,
+        "perf_spike": 2
+    }.get(kind, 1)
+
+    return base + urgency
 
 class CtxBody(BaseModel):
     scope: str
@@ -394,11 +419,21 @@ async def push_context(body: CtxBody):
     
     if body.scope == "merchant":
         cat = body.payload.get("category_slug")
-        if cat and not any(
-    scope == "category" and ctx["payload"].get("slug") == cat
-    for (scope, _), ctx in contexts.items()
-):
-            return {"accepted": False, "reason": "missing_category_dependency"}
+
+        if cat:
+            category_exists = any(
+                scope == "category"
+                and isinstance(ctx.get("payload", {}), dict)
+                and (ctx.get("payload", {}).get("slug") == cat
+                    or ctx.get("payload", {}).get("category_slug") == cat)
+                for (scope, _), ctx in contexts.items()
+            )
+
+            if not category_exists:
+                return {
+                    "accepted": False,
+                    "reason": "missing_category_dependency"
+                }
 
     key = (body.scope, body.context_id)
     with contexts_lock:
@@ -423,7 +458,18 @@ async def tick(body: TickBody):
     MAX_ACTIONS = 10
     actions = []
 
-    for trg_id in body.available_triggers:
+    body.available_triggers.sort(
+        key=lambda x: priority(_get_ctx("trigger", x)),
+        reverse=True
+    )
+
+    triggers_sorted = sorted(
+        body.available_triggers,
+        key=lambda t: priority(_get_ctx("trigger", t)) if _get_ctx("trigger", t) else 0,
+        reverse=True
+    )
+
+    for trg_id in triggers_sorted:
         if len(actions) >= MAX_ACTIONS:
             break
 
@@ -434,7 +480,8 @@ async def tick(body: TickBody):
 
         category, merchant, trg, customer = resolved
 
-        sup_key = trg.get("suppression_key", trg_id)
+        merchant_id = merchant.get("merchant_id", "")
+        sup_key = trg.get("suppression_key") or f"{trg_id}:{merchant_id}"
 
         with conversations_lock:
             if sup_key in fired_suppression:
@@ -460,6 +507,8 @@ async def tick(body: TickBody):
 
         merchant_id = merchant.get("merchant_id", "")
         customer_id = customer.get("customer_id") if customer else None
+
+        sup_key = f"{trg_id}:{merchant_id}"
         conv_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
 
         # store conversation + suppression
@@ -497,7 +546,7 @@ async def tick(body: TickBody):
             "template_params": [owner, trg.get("kind", "update"), result["cta"]],
             "body": result.setdefault("body", "Quick check — want me to help?"),
             "cta": result.setdefault("cta", "open_ended"),
-            "suppression_key": str(sup_key),
+            "suppression_key": sup_key,
             "rationale": result.setdefault("rationale", "auto")
         })
 
