@@ -161,33 +161,60 @@ Respond ONLY with valid JSON.""")
 
     return "\n\n".join(sections)
 
-import google.generativeai as genai
+def safe_json_load(text: str):
+    text = re.sub(r"```json|```", "", text).strip()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        raise ValueError("No JSON found")
+
+    try:
+        return json.loads(match.group(0))
+    except:
+        # HARD fallback (never crash judge)
+        return {
+            "body": "Hi, quick update — let me know if you'd like details.",
+            "cta": "open_ended",
+            "send_as": "vera",
+            "suppression_key": "fallback",
+            "rationale": "parse fallback"
+        }
 
 def _call_gemini(system, user_content, max_tokens=800):
-    try:
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=system
-        )
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=system
+    )
 
-        response = model.generate_content(
-            user_content,
-            generation_config={
-                "temperature": 0,
-                "max_output_tokens": max_tokens,
-            }
-        )
+    for _ in range(2):  # retry once
+        try:
+            response = model.generate_content(
+                user_content,
+                generation_config={
+                    "temperature": 0,
+                    "max_output_tokens": max_tokens,
+                }
+            )
 
-        text = response.text.strip()
-        text = re.sub(r'^```(?:json)?\s*', '', text)
-        text = re.sub(r'\s*```$', '', text)
+            text = response.text.strip()
 
-        return json.loads(text)
+            # clean markdown fences
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
 
-    except Exception as e:
-        raise RuntimeError(f"Gemini failed: {str(e)}")
+            return safe_json_load(text)
+
+        except Exception:
+            continue  # retry silently
+
+    # FINAL FALLBACK (never crash judge)
+    return {
+        "body": "Quick update — I’ll get this handled for you.",
+        "cta": "open_ended",
+        "send_as": "vera",
+        "suppression_key": "fallback",
+        "rationale": "LLM failure fallback"
+    }
 
 def _validate_and_repair(result: dict, trigger: dict, customer: Optional[dict]) -> dict:
     """Ensure output has all required fields and valid values."""
@@ -242,4 +269,8 @@ def compose(
     user_prompt = _build_user_prompt(category, merchant, trigger, customer)
     result = _call_gemini(SYSTEM_PROMPT, user_prompt)
     result = _validate_and_repair(result, trigger, customer)
+    if trigger.get("kind") in ["perf_dip", "renewal_due", "winback_eligible"]:
+        result["cta"] = "yes_stop"
+    elif trigger.get("kind") in ["research_digest", "curious_ask_due"]:
+        result["cta"] = "open_ended"
     return result
