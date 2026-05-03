@@ -149,29 +149,69 @@ Respond ONLY with valid JSON (no markdown fences):
   "rationale": "1 sentence"
 }"""
 
+def log(stage, data):
+    print(json.dumps({
+        "stage": stage,
+        "data": str(data)[:500]
+    }))
+
+def fallback_response(trigger):
+    kind = trigger.get("kind", "update")
+
+    if kind == "perf_dip":
+        msg = "Your performance dropped recently — want me to share a quick fix?"
+        cta = "yes_stop"
+    elif kind == "recall_due":
+        msg = "You have pending customers due for recall — want me to handle it?"
+        cta = "yes_stop"
+    else:
+        msg = "Quick update — want more details?"
+        cta = "open_ended"
+
+    return {
+        "body": msg if cta != "yes_stop" else msg + " Reply YES.",
+        "cta": cta,
+        "send_as": "vera",
+        "suppression_key": "llm_fallback",
+        "rationale": "LLM failure fallback"
+    }
+
 def safe_parse_json(text: str):
-    # remove markdown
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
 
-    # extract JSON block
-    match = re.search(r'\{[\s\S]*?\}', text)
-    if not match:
-        raise ValueError("No JSON found")
+    start = text.find('{')
+    if start == -1:
+        raise ValueError("No JSON start")
 
-    json_str = match.group(0)
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                json_str = text[start:i+1]
 
-    # remove trailing commas (common LLM mistake)
-    json_str = re.sub(r',\s*}', '}', json_str)
-    json_str = re.sub(r',\s*]', ']', json_str)
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
 
-    return json.loads(json_str)
+                return json.loads(json_str)
+
+    raise ValueError("No complete JSON object found")
+
+def validate_compose_output(res):
+    required = ["body", "cta", "send_as", "suppression_key", "rationale"]
+    for k in required:
+        if k not in res:
+            raise ValueError(f"Missing key: {k}")
+    return res
 
 import google.generativeai as genai
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-def _call_gemini(system, user_content, max_tokens=800):
+def _call_gemini(system, user_content, trigger, max_tokens=800):
     try:
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",
@@ -187,42 +227,33 @@ def _call_gemini(system, user_content, max_tokens=800):
             }
         )
 
-        # ✅ SAFE extraction
         raw = getattr(response, "text", None)
-
         if not raw:
-            print("⚠️ EMPTY RESPONSE:", response)
-            raise ValueError("Empty response from Gemini")
+            raw = str(response)
 
         raw = raw.strip()
 
-        # ===== 1. STRICT PARSE =====
+        # 1. strict
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            return validate_compose_output(parsed)
         except Exception as e:
-            print("⚠️ STRICT PARSE FAILED")
+            log("STRICT_FAIL", e)
 
-        # ===== 2. SAFE PARSE =====
+        # 2. safe
         try:
-            return safe_parse_json(raw)
+            parsed = safe_parse_json(raw)
+            return validate_compose_output(parsed)
         except Exception as e:
-            print("⚠️ SAFE PARSE FAILED")
+            log("SAFE_FAIL", e)
 
-        # ===== 3. HARD FAIL =====
-        print("❌ UNRECOVERABLE OUTPUT:")
-        print(raw)
+        # 3. fail
+        log("UNRECOVERABLE", raw)
         raise ValueError("Unrecoverable JSON")
 
     except Exception as e:
-        print("🚨 GEMINI FAILURE:", str(e))
-
-        return {
-            "body": "Your visibility dropped recently — I’ve prepared a fix based on your data. Reply YES.",
-            "cta": "yes_stop",
-            "send_as": "vera",
-            "suppression_key": "llm_hard_fallback",
-            "rationale": f"LLM failure: {str(e)[:50]}"
-        }
+        log("GEMINI_FAIL", e)
+        return fallback_response(trigger)
 
 def _get_ctx(scope: str, context_id: str) -> Optional[dict]:
     with contexts_lock:
