@@ -1,142 +1,127 @@
-# Vera Bot — magicpin AI Challenge Submission
+# Vera AI Engine (Magicpin AI Challenge)
 
-**Submitted by**: Tanu Luthra  
-**Model**: gemini-2.5-flash  
-**Architecture**: FastAPI-based trigger-routed LLM system with post-generation validation
+A production-style, context-aware LLM messaging system designed to generate highly specific WhatsApp messages for merchants using structured triggers, deterministic fallback logic, and strict response constraints.
 
 ---
 
-## Overview
+## 🚀 Problem Statement
 
-Vera Bot is a production-style HTTP service that generates high-quality WhatsApp messages for merchants based on structured context inputs.
-
-The system exposes all required endpoints:
-- `/v1/context` → ingest category, merchant, customer, trigger data
-- `/v1/tick` → evaluate triggers and generate outbound messages
-- `/v1/reply` → handle multi-turn conversations
-- `/v1/healthz`, `/v1/metadata`, `/v1/teardown`
+Build an AI system that:
+- Responds to business triggers (performance drops, renewals, spikes)
+- Generates highly specific, non-generic messages
+- Handles LLM failures gracefully
+- Ensures deterministic behavior under strict constraints
 
 ---
 
-## Core Approach
+## 🧠 System Architecture
 
-### 1. Trigger → Context Resolution
-Each trigger is resolved into:
+### Core Pipeline
+
+Trigger → Context Resolver → Prompt Builder → LLM (Gemini) → Validator → Fallback Layer → Output Actions
+
+---
+
+## ⚙️ Key Features
+
+### 1. Trigger-Based Routing
+- Supports: `perf_dip`, `renewal_due`, `recall_due`, `festival_upcoming`, `perf_spike`
+- Priority scoring system for execution order
+
+---
+
+### 2. Context Injection System
 - Category context (voice, peer stats, trends)
-- Merchant context (performance, offers, signals)
-- Optional customer context
-
-Only relevant fields are included → avoids prompt bloat.
-
----
-
-### 2. Structured Prompt Composition
-A single prompt is constructed containing:
-- Category intelligence (digest, peer stats, trends)
-- Merchant performance and offers
-- Trigger payload (urgency, type)
-- Language + tone instructions
-
-Strict constraints enforced:
-- No hallucination (only provided facts)
-- Hinglish allowed
-- One clear CTA
-- No preambles or fluff
+- Merchant context (performance, signals, offers)
+- Customer context (when applicable)
+- Strict dependency validation
 
 ---
 
-### 3. LLM Generation (Gemini 2.5 Flash)
-- Temperature = 0 → deterministic outputs
-- Single-call generation → low latency
-- JSON-only output enforced
+### 3. LLM Integration (Gemini)
+- Structured JSON output enforcement
+- Temperature = 0 for determinism
+- Safe JSON parsing with recovery layer
 
 ---
 
-### 4. Post-LLM Validation (Critical Layer)
-
-System does NOT trust LLM blindly.
-
-Enforces:
-- Valid `cta` (`yes_stop`, `open_ended`, `none`)
-- Correct `send_as` (based on customer presence)
-- Non-empty body fallback
-- Deterministic `suppression_key`
-- CTA enforcement (ensures "Reply YES" exists when required)
+### 4. Fallback System (Critical Design)
+- Trigger-aware fallback generation
+- Uses real payload data (e.g. drop %, CTR, signals)
+- Never returns generic messages
 
 ---
 
-### 5. Suppression & State Management
-
-- Prevents duplicate messages using `suppression_key`
-- Maintains in-memory:
-  - contexts
-  - conversations
-  - conversation metadata
-- Ensures one trigger → one action
+### 5. Suppression Engine
+- Prevents duplicate trigger firing
+- Maintains idempotency across ticks
 
 ---
 
-### 6. Multi-turn Handling (/v1/reply)
+## 🧪 API Endpoints
 
-Supports:
-- YES → immediate value delivery
-- NO → graceful exit
-- Auto-reply detection → retry once, then stop
-- Question handling → grounded responses only
-
-Conversation history is passed to maintain continuity.
-
----
-
-## Design Decisions
-
-| Decision | Reason |
-|--------|--------|
-| Single prompt | Faster, avoids multi-step errors |
-| Gemini Flash | Low latency + strong instruction following |
-| Post-validation | More reliable than re-prompting |
-| No retrieval system | Dataset fits in prompt |
-| In-memory state | Simpler, fast for evaluation |
+| Method | Endpoint        | Description |
+|--------|----------------|-------------|
+| GET    | /v1/healthz     | Health check |
+| GET    | /v1/metadata    | System metadata |
+| POST   | /v1/context     | Load category/merchant/trigger context |
+| POST   | /v1/tick        | Trigger message generation |
+| POST   | /v1/reply       | Conversation handling |
+| POST   | /v1/teardown    | Reset system state |
 
 ---
 
-## Tradeoffs
+## 🔥 Example Output
 
-- No retry mechanism for LLM failures (fallback used instead)
-- In-memory storage (not persistent)
-- CTA logic partially heuristic (not learned)
-
----
-
-## Testing
-
-The system was tested using Postman:
-
-- Context ingestion (`category`, `merchant`, `trigger`)
-- Trigger execution via `/v1/tick`
-- Multi-turn replies via `/v1/reply`
-
-A clean Postman collection is included in:
-```
-postman/vera-bot-collection.json
+```json
+{
+  "body": "Rahul, your salon’s visibility dropped 30% this week — CTR is 5% vs 12% average.",
+  "cta": "yes_stop",
+  "send_as": "vera"
+}
 ```
 
 ---
 
-## What could improve further
+## 🧱 Tech Stack
 
-1. Retry mechanism for LLM failures  
-2. Learned CTA optimization (based on past conversions)  
-3. Better auto-reply detection patterns  
-4. Persistent storage for production use  
+- Python 3.10+
+- FastAPI
+- Google Gemini API
+- Pydantic
+- Thread-safe in-memory state
 
 ---
 
-## Summary
+## ⚠️ Design Highlights
 
-The system prioritizes:
-- Deterministic outputs
-- Strong constraint enforcement
-- Real-world deployability
+- No hardcoded responses in main flow
+- Fallback system is context-aware (not generic)
+- Strict JSON enforcement with multi-layer parsing
+- Deterministic execution (temperature = 0)
+- Production-safe failure handling
 
-It is designed to behave like a production-ready messaging system rather than a prompt experiment.
+---
+
+## 📌 What makes this different
+
+Most LLM systems fail when:
+
+- API breaks
+- JSON is malformed
+- Context is incomplete
+
+This system:
+
+- Never breaks output contract
+- Degrades gracefully with context-aware fallback
+- Maintains business-critical messaging consistency
+
+---
+
+## 👤 Author
+
+Tanu Luthra
+B.Tech CSE | Backend + AI Systems
+
+---

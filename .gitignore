@@ -1,3 +1,7 @@
+__pycache__/
+*.pyc
+venv/
+.DS_Store
 .env
 .postman/
 *.postman_environment.json
