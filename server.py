@@ -20,7 +20,18 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+
 app = FastAPI(title="Vera Bot", version="1.0.0")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+templates = Jinja2Templates(directory="templates")
+
 START_TIME = time.time()
 
 # (scope, context_id) -> {"version": int, "payload": dict}
@@ -739,6 +750,9 @@ async def teardown():
     return {"status": "torn_down"}
 
 
-@app.get("/")
-async def root():
-    return {"service": "Vera Bot", "team": TEAM_NAME, "status": "running"}
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html"
+    )
