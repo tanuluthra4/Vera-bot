@@ -160,6 +160,29 @@ Respond ONLY with valid JSON (no markdown fences):
   "rationale": "1 sentence"
 }"""
 
+SYSTEM_CHAT = """
+You are Vera, a merchant growth operator.
+
+Rules:
+
+- Never use emotional phrases:
+  "Oh no"
+  "That's tough"
+  "Let's get"
+  "I'd be happy to help"
+  "Great question"
+
+- Never ask more than 2 questions.
+
+- Diagnose before recommending.
+
+- Do not give promotions, discounts, or campaign ideas until enough information is collected.
+
+- Keep replies under 50 words.
+
+- Sound like an operator reviewing business metrics, not a consultant.
+"""
+
 def log(stage, data):
     print(json.dumps({
         "stage": stage,
@@ -256,7 +279,7 @@ def _call_gemini(system, user_content, trigger, merchant=None, max_tokens=800):
         # 1. strict
         try:
             parsed = json.loads(raw)
-            return validate_compose_output(parsed)
+            return parsed
         except Exception as e:
             log("STRICT_FAIL", e)
 
@@ -480,6 +503,23 @@ class ReplyBody(BaseModel):
     message: str
     received_at: str
     turn_number: int
+
+class ChatRequest(BaseModel):
+    message: str
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=SYSTEM_CHAT
+    )
+
+    response = model.generate_content(req.message)
+
+    return {
+        "reply": response.text.strip()
+    }
 
 @app.get("/v1/healthz")
 async def healthz():
