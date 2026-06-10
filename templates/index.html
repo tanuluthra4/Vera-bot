@@ -9,11 +9,38 @@
 </head>
 <body>
 
-    <div class="container">
+<div class="chat-container">
+
+    <header class="chat-header">
         <h1>Vera Bot</h1>
         <p>AI Business Assistant</p>
+    </header>
+
+    <main id="chat-messages" class="chat-messages">
+
+        <div class="message bot-message">
+            Hello! How can I help you today?
+        </div>
+
+    </main>
+
+    <div class="chat-input-area">
+
+        <input
+            type="text"
+            id="messageInput"
+            placeholder="Type a message..."
+        >
+
+        <button id="sendBtn">
+            Send
+        </button>
+
     </div>
 
-    <script src="/static/js/script.js"></script>
+</div>
+
+<script src="/static/js/script.js"></script>
+
 </body>
 </html>
